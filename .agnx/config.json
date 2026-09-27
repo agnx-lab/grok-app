@@ -1,0 +1,10 @@
+{
+  "appId": "grok-app",
+  "installState": "installed",
+  "launchMode": "debug",
+  "source": {
+    "kind": "github",
+    "url": "https://github.com/RongleCat/grok-app"
+  },
+  "updatedAt": "2026-09-27T01:27:55.827Z"
+}

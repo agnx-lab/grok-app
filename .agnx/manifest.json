@@ -1,0 +1,37 @@
+{
+  "id": "grok-app",
+  "name": "Grok App",
+  "version": "0.1.0",
+  "description": "Agnx 外置子应用：Grok Build CLI 工作台（路径 A · 外置 Host + 状态/深链）",
+  "engines": {
+    "agnx": ">=1.0.0"
+  },
+  "main": "./dist/index.js",
+  "icon": "./src-tauri/icons/128x128.png",
+  "platforms": {
+    "desktop": "supported",
+    "web": "unsupported",
+    "mobile": "unsupported"
+  },
+  "sidecar": {
+    "supervised": true,
+    "ensureTool": ".agnx/tools/ensure-grok-app.mjs",
+    "stateFile": "grok-app.json",
+    "defaultPort": 18799,
+    "lifecycle": "lazy"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "grok-app.open",
+        "title": "Grok App"
+      }
+    ],
+    "panels": [
+      {
+        "id": "grok-app.main",
+        "title": "Grok App"
+      }
+    ]
+  }
+}
