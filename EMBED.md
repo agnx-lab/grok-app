@@ -7,6 +7,7 @@
   - Token 门控 Mirror：`http://127.0.0.1:{port}/t/{token}/`
   - Tab：`host.guest.mount`（`guest.auth=none`，path token 已鉴权），贴边满铺
   - ensure **自拉起** Host（Grok `/api/health` 仅 `{ok:true}`，无 `instanceId`；避免 daemon 代 spawn 卡死）
+  - 启动参数 **`--start-in-tray`**：藏主窗 + macOS Accessory（禁止独立 Grok.app 窗口当入口）
   - 真树根目录须有 `manifest.json` → `.agnx/manifest.json`（daemon supervised 读根 manifest）
 - **禁止：** 状态页 +「打开系统窗口」；`embedMode=external-host`；整嵌 Tauri WebView 壳
 - **默认关闭：** Remote IM、桌宠、Quick Tunnel

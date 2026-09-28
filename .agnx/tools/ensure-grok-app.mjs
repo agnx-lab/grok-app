@@ -275,7 +275,8 @@ async function spawnMirrorLocal(cfg, statePath, token, wantedFp, launchPath, spa
     await new Promise((r) => setTimeout(r, 400));
   }
 
-  const child = spawn(spawnCmd, [], {
+  // --start-in-tray：藏主窗 + macOS Accessory（禁 Dock 独立窗当产品入口）
+  const child = spawn(spawnCmd, ["--start-in-tray"], {
     cwd: cfg.repoRoot,
     env: { ...process.env, ...envPatch },
     detached: true,
