@@ -53,6 +53,10 @@ pub struct MirrorEnvConfig {
     pub dist: Option<PathBuf>,
     /// Concurrent WS client cap (`GROK_MIRROR_MAX_CLIENTS`, default 4).
     pub max_clients: u32,
+    /// Initial read-only policy (`GROK_MIRROR_READ_ONLY`).
+    /// Unset → true (phone-share safe default). `0`/`false`/`off`/`no` → allow writes
+    /// (`session.send` / permissions) — required for Agnx Path B Tab Guest.
+    pub read_only: bool,
 }
 
 impl MirrorEnvConfig {
@@ -77,6 +81,7 @@ impl MirrorEnvConfig {
             .and_then(|s| s.trim().parse::<u32>().ok())
             .map(normalize_max_clients)
             .unwrap_or(DEFAULT_MAX_CLIENTS);
+        let read_only = env_read_only_default_true("GROK_MIRROR_READ_ONLY");
         Self {
             headless,
             token,
@@ -85,6 +90,7 @@ impl MirrorEnvConfig {
             allow_lan,
             dist,
             max_clients,
+            read_only,
         }
     }
 }
@@ -96,6 +102,17 @@ fn env_truthy(key: &str) -> bool {
             matches!(v.as_str(), "1" | "true" | "yes" | "on")
         }
         Err(_) => false,
+    }
+}
+
+/// Phone-share default is read-only; Agnx Path B sets `GROK_MIRROR_READ_ONLY=0`.
+fn env_read_only_default_true(key: &str) -> bool {
+    match std::env::var(key) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !matches!(v.as_str(), "0" | "false" | "no" | "off")
+        }
+        Err(_) => true,
     }
 }
 
@@ -185,13 +202,14 @@ impl MirrorHost {
         let env = MirrorEnvConfig::from_env();
         let max_clients = env.max_clients;
         let allow_lan = env.allow_lan;
+        let read_only = env.read_only;
         Self {
             inner: Mutex::new(Inner {
                 env,
                 runtime: None,
                 ctx: None,
-                // Safe default: phone can observe until the user opts into write access.
-                read_only: true,
+                // Default true (phone observe-only); Path B / env can open writes at boot.
+                read_only,
                 max_clients,
                 allow_lan,
             }),
@@ -776,6 +794,32 @@ mod tests {
     }
 
     #[test]
+    fn env_read_only_default_true_parsing() {
+        // Unset → true (safe). Explicit falsy → false (Path B write-open).
+        assert!(env_read_only_default_true(
+            "GROK_MIRROR_READ_ONLY_UNIT_TEST_UNSET_SHOULD_NOT_EXIST_XYZ"
+        ));
+        // Cannot safely mutate process env in parallel tests for the real key;
+        // cover the matcher branches with a throwaway key via set/remove.
+        let key = "GROK_MIRROR_READ_ONLY_UNIT_TEST_KEY";
+        unsafe {
+            std::env::set_var(key, "0");
+        }
+        assert!(!env_read_only_default_true(key));
+        unsafe {
+            std::env::set_var(key, "false");
+        }
+        assert!(!env_read_only_default_true(key));
+        unsafe {
+            std::env::set_var(key, "1");
+        }
+        assert!(env_read_only_default_true(key));
+        unsafe {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
     fn normalize_max_clients_clamps() {
         assert_eq!(normalize_max_clients(0), MIN_CLIENTS);
         assert_eq!(normalize_max_clients(4), 4);
@@ -812,6 +856,7 @@ mod tests {
                     allow_lan: false,
                     dist: Some(resolve_dist_dir(None)),
                     max_clients: DEFAULT_MAX_CLIENTS,
+                    read_only: true,
                 },
                 runtime: None,
                 ctx: None,
@@ -894,6 +939,7 @@ mod tests {
                     allow_lan: false,
                     dist: Some(missing.clone()),
                     max_clients: DEFAULT_MAX_CLIENTS,
+                    read_only: true,
                 },
                 runtime: None,
                 ctx: None,

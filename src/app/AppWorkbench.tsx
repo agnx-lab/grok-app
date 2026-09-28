@@ -9352,7 +9352,7 @@ export function AppWorkbench() {
       setModelPickBusy(true);
       try {
         if (pick.kind === "official") {
-          if (providerActiveSource === "custom" && api.isTauri()) {
+          if (providerActiveSource === "custom" && api.hasHost()) {
             await api.providersActivate("official");
             await refreshProviderRoute();
           }
@@ -9376,7 +9376,9 @@ export function AppWorkbench() {
             })
             .catch((e) => showToast(String(e), 4000));
         } else {
-          if (!api.isTauri()) return;
+          // Mirror Guest 与桌面同一套 providers.* / composer.prefs*；
+          // 勿用 isTauri() 静默 return，否则点 DeepSeek 芯片无任何反应。
+          if (!api.hasHost()) return;
           const provider = customProviders.find(
             (p) => p.id === pick.providerId,
           );
@@ -9429,6 +9431,7 @@ export function AppWorkbench() {
             }
           }
           await refreshProviderRoute();
+          setModelId(pick.modelId);
           // Map effort into the picked model's catalog (Grok ↔ DeepSeek tiers).
           const nextEfforts =
             effortOptionsFromProvider(appliedLive.efforts) ?? GROK_BUILD_EFFORTS;
@@ -9473,7 +9476,7 @@ export function AppWorkbench() {
   );
   const handleContextWindow = useCallback(
     async (tokens: number) => {
-      if (!api.isTauri() || !activeCustomProvider) return;
+      if (!api.hasHost() || !activeCustomProvider) return;
       try {
         await api.providersUpsert({
           id: activeCustomProvider.id,

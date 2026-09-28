@@ -13,6 +13,7 @@ fn test_host(token: &str, dist: PathBuf, allow_lan: bool) -> Arc<MirrorHost> {
                 allow_lan,
                 dist: Some(dist),
                 max_clients: DEFAULT_MAX_CLIENTS,
+                read_only: true,
             },
             runtime: None,
             ctx: None,

@@ -8,6 +8,7 @@
   - Tab：`host.guest.mount`（`guest.auth=none`，path token 已鉴权），贴边满铺
   - ensure **自拉起** Host（Grok `/api/health` 仅 `{ok:true}`，无 `instanceId`；避免 daemon 代 spawn 卡死）
   - 启动参数 **`--start-in-tray`**：藏主窗 + macOS Accessory（禁止独立 Grok.app 窗口当入口）
+  - **`GROK_MIRROR_READ_ONLY=0`**：Tab Guest 可 `session.send` / 权限 Ask（手机分享默认只读；嵌页必须写开）
   - 真树根目录须有 `manifest.json` → `.agnx/manifest.json`（daemon supervised 读根 manifest）
 - **禁止：** 状态页 +「打开系统窗口」；`embedMode=external-host`；整嵌 Tauri WebView 壳
 - **默认关闭：** Remote IM、桌宠、Quick Tunnel
@@ -18,7 +19,8 @@
 
 | 上游能力 | 嵌进 Agnx 后 | 处置 |
 | --- | --- | --- |
-| 会话列表/连接/发送/权限 Ask | Mirror WS RPC（`CMD_TO_METHOD`） | **B** — 主验收路径 |
+| 会话列表/连接/发送/权限 Ask | Mirror WS RPC（`CMD_TO_METHOD`）；Host **须** `GROK_MIRROR_READ_ONLY=0` | **B** — 主验收路径 |
+| 自定义通道模型切换（DeepSeek 等） | `providers.list/activate/upsert` + `composer.prefsSet`；Guest **勿** `isTauri()` 静默 return | **B** |
 | 项目列表 / 基础 settings | Mirror 已映射 | **B** |
 | 选目录 / 部分桌面-only `invoke` | 可能不可用 | **E/D** — 详情粘贴路径；标未完成勿假 PASS |
 | 桌宠 / wallpaper / skin | 默认关 | **D** |

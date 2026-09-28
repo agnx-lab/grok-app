@@ -208,6 +208,8 @@ function fingerprint(cfg, token) {
         grokAppHome: cfg.grokAppHome,
         sessionDataMode: cfg.sessionDataMode,
         embed: "mirror-sidecar",
+        // Path B Guest 必须可 session.send；fingerprint 变化会强制重启旧只读 Host
+        mirrorReadOnly: false,
       }),
     )
     .digest("hex")
@@ -234,6 +236,9 @@ async function buildEnv(cfg, token, launchPath) {
     GROK_MIRROR_PORT: String(cfg.port),
     GROK_MIRROR_TOKEN: token,
     GROK_MIRROR_ALLOW_LAN: "0",
+    // Tab Guest 是产品入口：必须允许 session.send / 权限 Ask，否则一发就
+    // 「mirror is in read-only mode」。手机分享场景仍默认只读（env 未设）。
+    GROK_MIRROR_READ_ONLY: "0",
     GROK_APP_SESSION_DATA_MODE: cfg.sessionDataMode,
     GROK_APP_EMBED_MODE: "mirror-sidecar",
   };
@@ -257,7 +262,12 @@ async function waitForMirrorHealth(port, token, timeoutMs = 120_000) {
   const url = healthUrl(port, token);
   while (Date.now() < deadline) {
     const health = await httpGet(url, 2500);
-    if (health.ok && health.json?.ok === true) {
+    // Path B：ok 且可写（readOnly===false）。旧 Host 只回 {ok:true} 时无 readOnly 字段 → 视为未闭环，继续等新二进制。
+    if (
+      health.ok &&
+      health.json?.ok === true &&
+      health.json?.readOnly === false
+    ) {
       return true;
     }
     await new Promise((r) => setTimeout(r, 400));
@@ -266,8 +276,8 @@ async function waitForMirrorHealth(port, token, timeoutMs = 120_000) {
 }
 
 /**
- * Grok Host health 仅 `{ok:true}`，不回声 AGNX_SIDECAR_INSTANCE。
- * daemon supervised spawn 会卡 instanceId → ensure 自拉起，并以 reused 交卷供 Guest 挂载。
+ * Grok Host health：`{ok:true, readOnly:false}`（Path B 写开）。
+ * 无 instanceId → ensure 自拉起，并以 reused 交卷供 Guest 挂载。
  */
 async function spawnMirrorLocal(cfg, statePath, token, wantedFp, launchPath, spawnCmd, warnings) {
   const envPatch = await buildEnv(cfg, token, launchPath);
@@ -376,7 +386,8 @@ async function tryReused(cfg, statePath, token, wantedFp) {
     return null;
   }
   const health = await httpGet(healthUrl(cfg.port, token));
-  if (!health.ok || health.json?.ok !== true) {
+  // 旧只读 Host 或旧 health 无 readOnly → 不 reuse，强制走 spawn 换写开二进制
+  if (!health.ok || health.json?.ok !== true || health.json?.readOnly !== false) {
     return null;
   }
   return {

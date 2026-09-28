@@ -14,6 +14,9 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Write RPC methods blocked when the host is in read-only mode.
 /// Keep in sync with `src/lib/mirrorWriteSurface.ts` (UI category list).
+/// Note: `providers.*` / `composer.prefsSet` stay outside this list (same as
+/// historical `providers.activate`) so phone observe-only still cannot send,
+/// while Path B (`GROK_MIRROR_READ_ONLY=0`) can switch models + send.
 pub const WRITE_METHODS: &[&str] = &[
     "session.send",
     "session.stop",
@@ -187,6 +190,111 @@ pub async fn dispatch(
             let _ = crate::extensions::sync_user_mcp_for_official_aux_inject(&mode);
             mgr.recycle_all_agents(&app, "provider_route").await;
             Ok(serde_json::to_value(result).map_err(|e| RpcError::host(e.to_string()))?)
+        }
+        "providers.upsert" => {
+            // Guest model-menu switch (DeepSeek V4 Pro ↔ Flash, etc.).
+            // Params are the camelCase body from `providersUpsert` / UpsertProviderInput.
+            let app = app.ok_or_else(RpcError::no_ctx)?.clone();
+            let mgr = mgr.ok_or_else(RpcError::no_ctx)?.clone();
+            let input: crate::providers::UpsertProviderInput = serde_json::from_value(params.clone())
+                .map_err(|e| RpcError::bad_params(format!("providers.upsert: {e}")))?;
+            let set_default_flag = input.set_as_default.unwrap_or(false);
+            let mutated_id = input.id.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                let result = crate::providers::upsert_custom_provider(input)?;
+                if let Some(p) = result
+                    .providers
+                    .iter()
+                    .find(|p| p.is_default)
+                    .or(result.providers.first())
+                {
+                    let mut secrets = store::load_secrets();
+                    secrets.relay_base_url = Some(p.base_url.clone());
+                    secrets.default_model = result.default_model.clone();
+                    let _ = store::save_secrets(&secrets);
+                    if set_default_flag {
+                        let mut settings = store::load_settings();
+                        let upstream = p.model.trim();
+                        settings.model_id = Some(if upstream.is_empty() {
+                            crate::providers::OFFICIAL_CATALOG_MODEL.into()
+                        } else {
+                            upstream.to_string()
+                        });
+                        let _ = store::save_settings(&settings);
+                    }
+                }
+                Ok::<_, String>(result)
+            })
+            .await
+            .map_err(|e| RpcError::host(e.to_string()))?
+            .map_err(RpcError::host)?;
+            if crate::providers::provider_mutation_needs_agent_reload(
+                set_default_flag,
+                &mutated_id,
+                &result,
+            ) {
+                mgr.recycle_all_agents(&app, "provider_route").await;
+            }
+            Ok(serde_json::to_value(result).map_err(|e| RpcError::host(e.to_string()))?)
+        }
+        "composer.prefsSet" => {
+            let app = app.ok_or_else(RpcError::no_ctx)?.clone();
+            let mgr = mgr.ok_or_else(RpcError::no_ctx)?.clone();
+            let project_id = param_string(&params, &["projectId", "project_id"]);
+            let mut session_id = param_string(&params, &["sessionId", "session_id"]);
+            let model_id = param_string(&params, &["modelId", "model_id"]);
+            let effort = param_string(&params, &["effort"]);
+            let mode = param_string(&params, &["mode"]);
+            let permission_policy =
+                param_string(&params, &["permissionPolicy", "permission_policy"]);
+            let (live_proj, live_sess) = mgr.current_context_ids();
+            let project_id = project_id.or(live_proj);
+            // Same draft-effort rule as desktop `composer_prefs_set`.
+            if effort.is_none() {
+                session_id = session_id.or(live_sess);
+            }
+            let previous_effort = effort.as_ref().map(|_| {
+                store::resolve_composer_prefs(project_id.as_deref(), session_id.as_deref()).effort
+            });
+            let prefs = store::save_composer_prefs(
+                project_id.as_deref(),
+                session_id.as_deref(),
+                model_id.clone(),
+                effort.clone(),
+                mode.clone(),
+                permission_policy.clone(),
+            )
+            .map_err(RpcError::host)?;
+            if let Some(ref pol) = permission_policy {
+                if let Err(e) = mgr.apply_permission_policy(&app, pol).await {
+                    tracing::warn!("mirror composer.prefsSet apply_permission: {e}");
+                }
+            }
+            if let Some(mid) = model_id {
+                if let Err(e) = mgr.set_model(mid).await {
+                    tracing::warn!("mirror composer.prefsSet set_model soft-fail: {e}");
+                }
+            }
+            if let Some(eff) = effort {
+                let effort_changed = previous_effort.as_deref() != Some(eff.trim());
+                if let Err(e) = mgr
+                    .set_effort_and_respawn_needed(
+                        &app,
+                        eff,
+                        session_id.as_deref(),
+                        effort_changed,
+                    )
+                    .await
+                {
+                    tracing::warn!("mirror composer.prefsSet set_effort soft-fail: {e}");
+                }
+            }
+            if let Some(m) = mode {
+                if let Err(e) = mgr.apply_product_mode(&app, m).await {
+                    tracing::warn!("mirror composer.prefsSet apply_mode soft-fail: {e}");
+                }
+            }
+            Ok(serde_json::to_value(prefs).map_err(|e| RpcError::host(e.to_string()))?)
         }
 
         // ── Composer voice dictation (phone STT) ─────────────────────────────

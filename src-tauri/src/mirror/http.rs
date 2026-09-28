@@ -152,11 +152,16 @@ async fn unauth_fallback() -> Response {
     unauthorized()
 }
 
-async fn health_handler() -> impl IntoResponse {
+async fn health_handler(State(state): State<HttpState>) -> impl IntoResponse {
+    // Path B / Guest 验收：除 ok 外回声 readOnly，避免只绿 health 却拦 session.send。
+    let body = serde_json::json!({
+        "ok": true,
+        "readOnly": state.host.is_read_only(),
+    });
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
-        r#"{"ok":true}"#,
+        body.to_string(),
     )
 }
 

@@ -39,8 +39,14 @@ describe("mirror CMD_TO_METHOD allowlist", () => {
     expect(String(err.message)).toContain("mirror websocket");
   });
 
-  it("allows voice_transcribe (voice.transcribe) past the boundary", async () => {
-    const err = await invokeError("voice_transcribe");
+  it("allows providers_upsert (providers.upsert) past the boundary", async () => {
+    const err = await invokeError("providers_upsert");
+    expect(err.code).not.toBe("UNSUPPORTED");
+    expect(String(err.message)).toContain("mirror websocket");
+  });
+
+  it("allows composer_prefs_set (composer.prefsSet) past the boundary", async () => {
+    const err = await invokeError("composer_prefs_set");
     expect(err.code).not.toBe("UNSUPPORTED");
     expect(String(err.message)).toContain("mirror websocket");
   });
