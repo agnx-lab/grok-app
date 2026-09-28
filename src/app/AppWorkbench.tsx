@@ -9147,7 +9147,9 @@ export function AppWorkbench() {
     [customProviders],
   );
   const refreshProviderRoute = useCallback(async () => {
-    if (!api.isTauri()) {
+    // Mirror Guest 也有 Host（providers.list RPC）；勿用 isTauri() 把路由强制成 official，
+    // 否则芯片永远显示 Grok 目录，即使用户已配 DeepSeek 等自定义通道。
+    if (!api.hasHost()) {
       setActiveCustomProvider(null);
       setCustomProviders([]);
       setProviderActiveSource("official");

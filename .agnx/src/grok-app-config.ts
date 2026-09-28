@@ -30,7 +30,8 @@ export function defaultGrokAppConfigDocument(): GrokAppConfigDocument {
     mirrorToken: "",
     grokCliPath: "",
     grokAppHome: "",
-    sessionDataMode: "shared",
+    // Guest / Mirror：自定义 provider 只活在 agent-home，默认 independent。
+    sessionDataMode: "independent",
     enableRemoteIm: false,
     enablePet: false,
     keepRunningInBackground: true,

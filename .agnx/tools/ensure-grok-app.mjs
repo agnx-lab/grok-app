@@ -28,7 +28,8 @@ function parseArgs(argv) {
   let mirrorToken = "";
   let grokCliPath = "";
   let grokAppHome = "";
-  let sessionDataMode = "shared";
+  // Guest Tab 自定义通道（DeepSeek 等）写在 agent-home；默认 independent，避免芯片被官方 Grok 目录盖住。
+  let sessionDataMode = "independent";
   let forceRestart = false;
   let supervised = false;
   for (let i = 0; i < argv.length; i += 1) {
@@ -167,20 +168,21 @@ function httpGet(url, timeoutMs = 4000) {
 }
 
 async function resolveLaunchBinary(repoRoot) {
+  // 优先仓内 debug/release（含 Guest Mirror 的 providers.list），再回落系统安装包。
   const candidates = [];
+  candidates.push(path.join(repoRoot, "src-tauri/target/debug/grok-app"));
+  candidates.push(path.join(repoRoot, "src-tauri/target/release/grok-app"));
+  candidates.push(path.join(repoRoot, "src-tauri/target/release/grok-app.exe"));
+  candidates.push(path.join(repoRoot, "src-tauri/target/release/bundle/macos/Grok.app/Contents/MacOS/grok-app"));
+  candidates.push(path.join(repoRoot, "src-tauri/target/release/bundle/macos/Grok.app"));
   if (process.platform === "darwin") {
     candidates.push("/Applications/Grok.app/Contents/MacOS/grok-app");
     candidates.push("/Applications/Grok.app/Contents/MacOS/Grok");
-    // bundle path used as open target
     candidates.push("/Applications/Grok.app");
     candidates.push(path.join(os.homedir(), "Applications/Grok.app/Contents/MacOS/grok-app"));
     candidates.push(path.join(os.homedir(), "Applications/Grok.app"));
   }
   candidates.push(path.join(os.homedir(), ".local/bin/grok-app"));
-  candidates.push(path.join(repoRoot, "src-tauri/target/release/grok-app"));
-  candidates.push(path.join(repoRoot, "src-tauri/target/release/grok-app.exe"));
-  candidates.push(path.join(repoRoot, "src-tauri/target/release/bundle/macos/Grok.app/Contents/MacOS/grok-app"));
-  candidates.push(path.join(repoRoot, "src-tauri/target/release/bundle/macos/Grok.app"));
 
   for (const p of candidates) {
     if (await pathExists(p)) {

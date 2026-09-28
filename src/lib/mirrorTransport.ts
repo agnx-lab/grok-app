@@ -60,6 +60,9 @@ const CMD_TO_METHOD: Record<string, string> = {
   settings_get: "settings.get",
   models_list_available: "models.list",
   composer_prefs_resolve: "composer.prefsResolve",
+  // Guest / phone: composer chip + custom DeepSeek (etc.) route honesty.
+  providers_list: "providers.list",
+  providers_activate: "providers.activate",
   // Composer voice dictation over the mirror (phone STT). The host only ever
   // discloses a boolean availability via voice.status; audio is transcribed
   // stateless via voice.transcribe. Secrets are never exposed to the client.

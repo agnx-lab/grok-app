@@ -148,6 +148,47 @@ pub async fn dispatch(
             Ok(serde_json::to_value(prefs).map_err(|e| RpcError::host(e.to_string()))?)
         }
 
+        // Custom provider route (Guest / phone mirror). Without this, Workbench
+        // forces activeSource=official and the composer chip always shows Grok.
+        "providers.list" => {
+            let list = tauri::async_runtime::spawn_blocking(|| {
+                let secrets = store::load_secrets();
+                let _ = crate::providers::maybe_migrate_legacy_relay(
+                    secrets.relay_base_url.as_deref(),
+                    secrets.relay_api_key.as_deref(),
+                    secrets.default_model.as_deref(),
+                );
+                let _ = crate::providers::ensure_models_retry_cap();
+                let _ = crate::providers::repair_custom_base_urls();
+                let _ = crate::relay_stream_proxy::repair_sanitize_proxy_bases();
+                crate::providers::list_custom_providers()
+            })
+            .await
+            .map_err(|e| RpcError::host(e.to_string()))?
+            .map_err(RpcError::host)?;
+            Ok(serde_json::to_value(list).map_err(|e| RpcError::host(e.to_string()))?)
+        }
+        "providers.activate" => {
+            let app = app.ok_or_else(RpcError::no_ctx)?.clone();
+            let mgr = mgr.ok_or_else(RpcError::no_ctx)?.clone();
+            let source = param_string(&params, &["source"])
+                .ok_or_else(|| RpcError::bad_params("source required"))?;
+            let provider_id = param_string(&params, &["providerId", "provider_id"]);
+            let result = tauri::async_runtime::spawn_blocking({
+                let source = source.clone();
+                let provider_id = provider_id.clone();
+                move || crate::providers::activate_provider(&source, provider_id.as_deref())
+            })
+            .await
+            .map_err(|e| RpcError::host(e.to_string()))?
+            .map_err(RpcError::host)?;
+            let mode = store::load_settings().session_data_mode.clone();
+            let _ = crate::official_aux::sync_native_media_block_hook_for_current(&mode);
+            let _ = crate::extensions::sync_user_mcp_for_official_aux_inject(&mode);
+            mgr.recycle_all_agents(&app, "provider_route").await;
+            Ok(serde_json::to_value(result).map_err(|e| RpcError::host(e.to_string()))?)
+        }
+
         // ── Composer voice dictation (phone STT) ─────────────────────────────
         // Minimal disclosure: `voice.status` returns only a boolean availability
         // (+ opaque reason/authSource class), never any secret material.
