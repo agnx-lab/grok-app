@@ -1,4 +1,4 @@
-// 场景：极薄 Agnx Agent 工具：grok_app_health / grok_app_open；不镜像 MCP / Skills。
+// 场景：极薄 Agent 工具 — grok_app_health / grok_app_open（开 Tab，禁外开 .app）。
 import type { WorkspaceAppHostApi } from "@getagnx/app-sdk";
 import {
   GROK_APP_ENSURE_TOOL_REL,
@@ -44,7 +44,7 @@ export function registerGrokAppAgentTools(host: WorkspaceAppHostApi): () => void
         name: "grok_app_health",
         ...GROUP,
         description:
-          "检查 Grok App host-shim / session-api 是否就绪（必要时短跑 ensure）。不代替 Grok Workbench 内操作。",
+          "检查 Grok Headless Mirror 是否就绪（必要时短跑 ensure）。不代替 Workbench 内操作；禁止外开系统窗。",
         inputSchema: {
           type: "object",
           properties: {
@@ -75,7 +75,7 @@ export function registerGrokAppAgentTools(host: WorkspaceAppHostApi): () => void
             appId: GROK_APP_ID,
             tool: GROK_APP_ENSURE_TOOL_REL,
             args: grokAppConfigToEnsureArgs(cfg),
-            timeoutMs: 120_000,
+            timeoutMs: 180_000,
           });
           const payload = pickEnsurePayload(result);
           if (payload) {
@@ -94,45 +94,22 @@ export function registerGrokAppAgentTools(host: WorkspaceAppHostApi): () => void
         name: "grok_app_open",
         ...GROUP,
         description:
-          "打开 Grok App Tab，并请求在系统窗口打开 Grok Workbench（路径 A）。不把会话并入 Agnx conversation。",
+          "在工作区打开 Grok App Tab（Guest 嵌 Headless Mirror Workbench）。不是打开独立 Grok.app 系统窗。",
         inputSchema: {
           type: "object",
-          properties: {
-            systemWindow: {
-              type: "boolean",
-              description: "为 true 时同时请求打开系统窗（默认 true）",
-            },
-          },
+          properties: {},
           additionalProperties: false,
         },
-        execute: async (input) => {
+        execute: async () => {
           host.openMiniAppTab({
             appId: GROK_APP_ID,
             panelId: GROK_APP_PANEL_ID,
           });
-          const wantOpen = input?.systemWindow !== false;
-          if (!wantOpen || !host.tools?.run) {
-            return {
-              ok: true,
-              appId: GROK_APP_ID,
-              panelId: GROK_APP_PANEL_ID,
-              message: "已请求打开 Grok App Tab。",
-            };
-          }
-          const cfg = await loadGrokAppConfigFromHost(host.config);
-          const result = await host.tools.run({
-            appId: GROK_APP_ID,
-            tool: GROK_APP_ENSURE_TOOL_REL,
-            args: grokAppConfigToEnsureArgs(cfg, { open: true }),
-            timeoutMs: 60_000,
-          });
-          const payload = pickEnsurePayload(result);
           return {
-            ok: result.ok,
+            ok: true,
             appId: GROK_APP_ID,
             panelId: GROK_APP_PANEL_ID,
-            systemWindow: payload || { ok: result.ok },
-            message: "已请求打开 Tab 与系统窗口。",
+            message: "已请求打开 Grok App Tab（Guest Workbench）。",
           };
         },
       },

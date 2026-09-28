@@ -1,4 +1,4 @@
-// 场景：Grok App Sub App 入口 — 状态/深链 panel + 详情配置 + 极薄 tools（路径 A）。
+// 场景：Grok App Sub App 入口 — Guest Mirror + ensure + 详情配置 + 极薄 tools（路径 B）。
 import type { WorkspaceAppHostApi, WorkspaceAppModule } from "@getagnx/app-sdk";
 import { GrokAppIcon } from "./grok-app-icon";
 import {
@@ -41,10 +41,11 @@ export function activate(host: WorkspaceAppHostApi): void {
     title: "Grok App",
     icon: GrokAppIcon,
     component: GrokAppPanel,
+    iframeShortcutCapture: true,
     isolation: {
       mode: "iframe",
       sidecarTools: [GROK_APP_ENSURE_TOOL_REL],
-      note: "路径 A：外置 Grok.app + host-shim；Tab 为状态/深链，无 Guest 整站",
+      note: "路径 B：Headless Mirror + host.guest.mount；禁止外开 Grok.app",
     },
   });
 

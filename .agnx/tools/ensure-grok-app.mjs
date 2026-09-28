@@ -1,44 +1,35 @@
 #!/usr/bin/env node
 /**
- * 场景：短跑 sidecar — 确保 Grok App host-shim 已起（路径 A · 外置 Host）。
+ * 场景：短跑 sidecar — 确保 Grok Headless Mirror 已起（路径 B · Tab 内 Guest）。
  * 用法：node .agnx/tools/ensure-grok-app.mjs [--work-dir <dataRoot>] [--port <n>]
- *       [--grok-cli-path <bin>] [--grok-app-home <dir>] [--session-data-mode shared|independent]
- *       [--embed-mode external-host|node-acp-sidecar] [--enable-remote-im true|false]
- *       [--enable-pet true|false] [--supervised] [--force-restart] [--open]
+ *       [--mirror-token <tok>] [--grok-cli-path <bin>] [--grok-app-home <dir>]
+ *       [--session-data-mode shared|independent] [--supervised] [--force-restart]
  *
- * stdout：单行 JSON { ok, origin, reused?, pid?, plan?, warnings?, error? }
- *
- * --supervised：输出 daemon 可 spawn 的 plan（command=node host-shim）。
- * --open：在已有 shim 上 POST /v1/open，或直接拉起 Grok.app。
+ * stdout：单行 JSON { ok, origin, port, reused?, pid?, plan?, warnings?, error? }
+ * origin 形如 http://127.0.0.1:{port}/t/{token}/ （禁止外开 Grok.app 当交付）
  */
-import { execFile, execFileSync } from "node:child_process";
 import { access, constants as fsConstants, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
-const shimScript = path.join(__dirname, "grok-app-host-shim.mjs");
 const defaultPort = 18799;
 const INSTALL_HINT =
-  "未找到 Grok.app。请从 https://grok-app.com 或 https://github.com/RongleCat/grok-app/releases 安装后再试。";
+  "未找到可启动的 Grok Host 二进制。请安装 https://github.com/RongleCat/grok-app/releases 的 Grok.app，或在本仓执行 pnpm build / pnpm tauri build 产出 release 二进制后再试。禁止用「打开系统窗口」交差。";
 
 function parseArgs(argv) {
   let workDir = process.env.AGNX_APP_DATA_ROOT || "";
   let port = defaultPort;
+  let mirrorToken = "";
   let grokCliPath = "";
   let grokAppHome = "";
   let sessionDataMode = "shared";
-  let embedMode = "external-host";
-  let enableRemoteIm = false;
-  let enablePet = false;
   let forceRestart = false;
   let supervised = false;
-  let openWindow = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
@@ -51,6 +42,9 @@ function parseArgs(argv) {
         port = Math.floor(n);
       }
       i += 1;
+    } else if ((arg === "--mirror-token" || arg === "--mirrorToken") && next) {
+      mirrorToken = String(next).trim();
+      i += 1;
     } else if ((arg === "--grok-cli-path" || arg === "--grokCliPath") && next) {
       grokCliPath = String(next).trim();
       i += 1;
@@ -60,21 +54,22 @@ function parseArgs(argv) {
     } else if ((arg === "--session-data-mode" || arg === "--sessionDataMode") && next) {
       sessionDataMode = next === "independent" ? "independent" : "shared";
       i += 1;
-    } else if ((arg === "--embed-mode" || arg === "--embedMode") && next) {
-      embedMode = next === "node-acp-sidecar" ? "node-acp-sidecar" : "external-host";
-      i += 1;
-    } else if ((arg === "--enable-remote-im" || arg === "--enableRemoteIm") && next) {
-      enableRemoteIm = next === "true" || next === "1" || next === "yes";
-      i += 1;
-    } else if ((arg === "--enable-pet" || arg === "--enablePet") && next) {
-      enablePet = next === "true" || next === "1" || next === "yes";
-      i += 1;
     } else if (arg === "--force-restart" || arg === "--forceRestart") {
       forceRestart = true;
     } else if (arg === "--supervised") {
       supervised = true;
-    } else if (arg === "--open") {
-      openWindow = true;
+    } else if (arg === "--open" || arg === "--embed-mode" || arg === "--embedMode") {
+      // 路径 A 已废止：忽略外开 / external-host
+      if (arg === "--embed-mode" || arg === "--embedMode") {
+        i += 1;
+      }
+    } else if (
+      arg === "--enable-remote-im" ||
+      arg === "--enableRemoteIm" ||
+      arg === "--enable-pet" ||
+      arg === "--enablePet"
+    ) {
+      i += 1;
     }
   }
   const resolvedWork =
@@ -88,30 +83,14 @@ function parseArgs(argv) {
   return {
     workDir: resolvedWork,
     port,
+    mirrorToken,
     grokCliPath: grokCliPath || process.env.AGNX_GROK_CLI_PATH || "",
     grokAppHome: grokAppHome || process.env.GROK_APP_HOME || "",
     sessionDataMode,
-    embedMode,
-    enableRemoteIm,
-    enablePet,
     forceRestart,
     supervised,
-    openWindow,
     repoRoot,
   };
-}
-
-function fingerprint(cfg) {
-  return JSON.stringify({
-    repoRoot: cfg.repoRoot,
-    port: cfg.port,
-    grokCliPath: cfg.grokCliPath,
-    grokAppHome: cfg.grokAppHome,
-    sessionDataMode: cfg.sessionDataMode,
-    embedMode: cfg.embedMode,
-    enableRemoteIm: cfg.enableRemoteIm,
-    enablePet: cfg.enablePet,
-  });
 }
 
 async function pathExists(filePath) {
@@ -144,150 +123,123 @@ function stopPid(pid) {
   try {
     process.kill(pid, "SIGTERM");
   } catch {
-    // already gone
+    // gone
   }
 }
 
-function healthUrlFor(cfg) {
-  return `http://127.0.0.1:${cfg.port}/v1/health`;
+function guestOrigin(port, token) {
+  return `http://127.0.0.1:${port}/t/${token}/`;
 }
 
-function originFor(cfg) {
-  return `http://127.0.0.1:${cfg.port}/`;
+function healthUrl(port, token) {
+  return `http://127.0.0.1:${port}/t/${token}/api/health`;
 }
 
-function httpJson(url, options = {}) {
+function httpGet(url, timeoutMs = 4000) {
   return new Promise((resolve) => {
-    const req = http.request(
-      url,
-      {
-        method: options.method || "GET",
-        timeout: options.timeoutMs || 4000,
-        headers: options.headers || {},
-      },
-      (res) => {
-        const chunks = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => {
-          const body = Buffer.concat(chunks).toString("utf8");
-          let json = null;
-          try {
-            json = JSON.parse(body);
-          } catch {
-            json = null;
-          }
-          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json, body });
+    const req = http.request(url, { method: "GET", timeout: timeoutMs }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        let json = null;
+        try {
+          json = JSON.parse(body);
+        } catch {
+          json = null;
+        }
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          json,
+          body,
         });
-      },
-    );
+      });
+    });
     req.on("error", () => resolve({ ok: false, status: 0, json: null, body: "" }));
     req.on("timeout", () => {
       req.destroy();
       resolve({ ok: false, status: 0, json: null, body: "" });
     });
-    if (options.body) {
-      req.write(options.body);
-    }
     req.end();
   });
 }
 
-/** 探测本机 Grok 二进制 / .app（不改 ~/.grok）。 */
-async function resolveGrokLaunchTarget(cfg) {
+async function resolveLaunchBinary(repoRoot) {
   const candidates = [];
   if (process.platform === "darwin") {
-    candidates.push({
-      kind: "app-bundle",
-      path: "/Applications/Grok.app",
-      openCmd: ["open", ["-a", "Grok"]],
-    });
-    candidates.push({
-      kind: "app-bundle",
-      path: path.join(os.homedir(), "Applications/Grok.app"),
-      openCmd: ["open", ["-a", "Grok"]],
-    });
+    candidates.push("/Applications/Grok.app/Contents/MacOS/grok-app");
+    candidates.push("/Applications/Grok.app/Contents/MacOS/Grok");
+    // bundle path used as open target
+    candidates.push("/Applications/Grok.app");
+    candidates.push(path.join(os.homedir(), "Applications/Grok.app/Contents/MacOS/grok-app"));
+    candidates.push(path.join(os.homedir(), "Applications/Grok.app"));
   }
-  const localBin = path.join(os.homedir(), ".local/bin/grok-app");
-  candidates.push({ kind: "bin", path: localBin });
-  const releaseCandidates = [
-    path.join(cfg.repoRoot, "src-tauri/target/release/grok-app"),
-    path.join(cfg.repoRoot, "src-tauri/target/release/grok-app.exe"),
-    path.join(cfg.repoRoot, "src-tauri/target/release/bundle/macos/Grok.app"),
-  ];
-  for (const p of releaseCandidates) {
-    candidates.push({
-      kind: p.endsWith(".app") ? "app-bundle" : "bin",
-      path: p,
-    });
-  }
+  candidates.push(path.join(os.homedir(), ".local/bin/grok-app"));
+  candidates.push(path.join(repoRoot, "src-tauri/target/release/grok-app"));
+  candidates.push(path.join(repoRoot, "src-tauri/target/release/grok-app.exe"));
+  candidates.push(path.join(repoRoot, "src-tauri/target/release/bundle/macos/Grok.app/Contents/MacOS/grok-app"));
+  candidates.push(path.join(repoRoot, "src-tauri/target/release/bundle/macos/Grok.app"));
 
-  for (const item of candidates) {
-    if (await pathExists(item.path)) {
-      return item;
+  for (const p of candidates) {
+    if (await pathExists(p)) {
+      return p;
     }
   }
   return null;
 }
 
-function defaultAppDataRoots(cfg) {
-  const roots = [];
-  if (cfg.grokAppHome) {
-    roots.push(cfg.grokAppHome);
-  }
-  if (process.env.GROK_APP_HOME) {
-    roots.push(process.env.GROK_APP_HOME);
-  }
-  const home = os.homedir();
-  if (process.platform === "darwin") {
-    roots.push(path.join(home, "Library/Application Support/com.grokapp.grok-app"));
-    roots.push(path.join(home, "Library/Application Support/com.grokapp.desktop"));
-  } else if (process.platform === "win32") {
-    const appdata = process.env.APPDATA || path.join(home, "AppData/Roaming");
-    roots.push(path.join(appdata, "grokapp", "grok-app"));
-    roots.push(path.join(appdata, "grok-app"));
-  } else {
-    roots.push(path.join(home, ".grok-app"));
-  }
-  return [...new Set(roots.filter(Boolean))];
+function resolveDistDir(repoRoot) {
+  const dist = path.join(repoRoot, "dist");
+  return dist;
 }
 
-async function tryReusedResponse(cfg, statePath, wantedFp) {
+function fingerprint(cfg, token) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        repoRoot: cfg.repoRoot,
+        port: cfg.port,
+        token,
+        grokCliPath: cfg.grokCliPath,
+        grokAppHome: cfg.grokAppHome,
+        sessionDataMode: cfg.sessionDataMode,
+        embed: "mirror-sidecar",
+      }),
+    )
+    .digest("hex")
+    .slice(0, 32);
+}
+
+async function resolveOrCreateToken(cfg, statePath) {
+  if (cfg.mirrorToken) {
+    return cfg.mirrorToken;
+  }
   const existing = await readState(statePath);
-  if (!existing?.pid || existing.fingerprint !== wantedFp) {
-    return null;
+  if (typeof existing?.mirrorToken === "string" && existing.mirrorToken.length >= 16) {
+    return existing.mirrorToken;
   }
-  try {
-    process.kill(existing.pid, 0);
-  } catch {
-    return null;
-  }
-  const health = await httpJson(healthUrlFor(cfg));
-  if (!health.ok || health.json?.ok !== true) {
-    return null;
-  }
-  return {
-    ok: true,
-    reused: true,
-    pid: existing.pid,
-    port: cfg.port,
-    origin: originFor(cfg),
-    healthUrl: healthUrlFor(cfg),
-    fingerprint: wantedFp,
-    launchTarget: existing.launchTarget || null,
-    sessionApiReady: health.json?.sessionApiReady === true,
-    grokRunning: health.json?.grokRunning === true,
-  };
+  return randomBytes(24).toString("hex");
 }
 
-function buildShimEnv(cfg) {
+function buildEnv(cfg, token, launchPath) {
+  const distDir = resolveDistDir(cfg.repoRoot);
   const env = {
-    GROK_APP_SHIM_PORT: String(cfg.port),
-    GROK_APP_REPO_ROOT: cfg.repoRoot,
+    GROK_MIRROR_HEADLESS: "1",
+    GROK_MIRROR_NO_TUNNEL: "1",
+    GROK_MIRROR_PORT: String(cfg.port),
+    GROK_MIRROR_TOKEN: token,
+    GROK_MIRROR_ALLOW_LAN: "0",
     GROK_APP_SESSION_DATA_MODE: cfg.sessionDataMode,
-    GROK_APP_EMBED_MODE: cfg.embedMode,
-    GROK_APP_ENABLE_REMOTE_IM: cfg.enableRemoteIm ? "1" : "0",
-    GROK_APP_ENABLE_PET: cfg.enablePet ? "1" : "0",
+    GROK_APP_EMBED_MODE: "mirror-sidecar",
   };
+  // Packaged .app 可走 embedded frontendDist；仓内 release 优先显式 dist
+  if (!String(launchPath).includes(".app")) {
+    env.GROK_MIRROR_DIST = distDir;
+  } else if (path.join(cfg.repoRoot, "dist", "index.html")) {
+    // 若本仓已 build dist，也注入，便于开发树覆盖
+    env.GROK_MIRROR_DIST = distDir;
+  }
   if (cfg.grokAppHome) {
     env.GROK_APP_HOME = cfg.grokAppHome;
   }
@@ -297,97 +249,71 @@ function buildShimEnv(cfg) {
   return env;
 }
 
-async function buildSupervisedPlan(cfg, warnings, wantedFp) {
-  const launchTarget = await resolveGrokLaunchTarget(cfg);
-  if (!launchTarget) {
-    warnings.push(INSTALL_HINT);
+function resolveCommand(launchPath) {
+  if (launchPath.endsWith(".app")) {
+    const macOs = path.join(launchPath, "Contents/MacOS");
+    // Prefer known binary names inside bundle
     return {
-      ok: false,
-      error: "grok_app_not_installed",
-      message: INSTALL_HINT,
-      installUrl: "https://github.com/RongleCat/grok-app/releases",
+      kind: "app-bundle",
+      command: launchPath,
+      // daemon will spawn; for .app we need the inner executable
+      // Caller resolves inner path before buildPlan
     };
   }
-  if (cfg.embedMode !== "external-host") {
-    warnings.push("本期仅路径 A（external-host）；node-acp-sidecar 尚未落地，仍走外置 Host。");
+  return { kind: "bin", command: launchPath };
+}
+
+async function resolveSpawnCommand(launchPath) {
+  if (launchPath.endsWith(".app")) {
+    const candidates = [
+      path.join(launchPath, "Contents/MacOS/grok-app"),
+      path.join(launchPath, "Contents/MacOS/Grok"),
+    ];
+    for (const c of candidates) {
+      if (await pathExists(c)) {
+        return c;
+      }
+    }
+    // last resort: first executable in MacOS
+    try {
+      const { readdirSync } = await import("node:fs");
+      const names = readdirSync(path.join(launchPath, "Contents/MacOS"));
+      if (names[0]) {
+        return path.join(launchPath, "Contents/MacOS", names[0]);
+      }
+    } catch {
+      // fallthrough
+    }
+    return null;
   }
-  if (!(await pathExists(shimScript))) {
-    return { ok: false, error: "shim_missing", message: `找不到 ${shimScript}` };
+  return launchPath;
+}
+
+async function tryReused(cfg, statePath, token, wantedFp) {
+  const existing = await readState(statePath);
+  if (!existing?.pid || existing.fingerprint !== wantedFp) {
+    return null;
+  }
+  try {
+    process.kill(existing.pid, 0);
+  } catch {
+    return null;
+  }
+  const health = await httpGet(healthUrl(cfg.port, token));
+  if (!health.ok || health.json?.ok !== true) {
+    return null;
   }
   return {
     ok: true,
-    plan: {
-      command: process.execPath,
-      args: [shimScript],
-      cwd: cfg.repoRoot,
-      env: buildShimEnv(cfg),
-      fingerprint: wantedFp,
-      healthUrl: healthUrlFor(cfg),
-      port: cfg.port,
-      launchMode: "packaged",
-    },
-    launchTarget,
+    reused: true,
+    pid: existing.pid,
+    port: cfg.port,
+    origin: guestOrigin(cfg.port, token),
+    healthUrl: healthUrl(cfg.port, token),
+    fingerprint: wantedFp,
+    mirrorToken: token,
+    embedMode: "mirror-sidecar",
   };
-}
-
-async function openGrokWindow(cfg, launchTarget) {
-  const target = launchTarget || (await resolveGrokLaunchTarget(cfg));
-  if (!target) {
-    return { ok: false, error: "grok_app_not_installed", message: INSTALL_HINT };
-  }
-  try {
-    if (process.platform === "darwin") {
-      if (target.kind === "app-bundle" && target.path.endsWith(".app")) {
-        execFileSync("open", ["-a", target.path.includes("/Applications/") ? "Grok" : target.path], {
-          stdio: "ignore",
-        });
-      } else {
-        execFileSync("open", ["-a", "Grok"], { stdio: "ignore" });
-      }
-      // 尝试深链（若已注册 grok://）
-      try {
-        execFileSync("open", ["grok://"], { stdio: "ignore" });
-      } catch {
-        // optional
-      }
-    } else if (process.platform === "win32") {
-      execFileSync(target.path, [], { stdio: "ignore", detached: true, windowsHide: true });
-    } else {
-      execFileSync(target.path, [], { stdio: "ignore", detached: true });
-    }
-    return { ok: true, opened: true, launchTarget: target.path };
-  } catch (err) {
-    return {
-      ok: false,
-      error: "open_failed",
-      message: err instanceof Error ? err.message : String(err),
-      launchTarget: target.path,
-    };
-  }
-}
-
-async function handleOpen(cfg, statePath, wantedFp) {
-  const health = await httpJson(healthUrlFor(cfg));
-  if (health.ok) {
-    const opened = await httpJson(`http://127.0.0.1:${cfg.port}/v1/open`, {
-      method: "POST",
-      timeoutMs: 8000,
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    });
-    if (opened.ok) {
-      return {
-        ok: true,
-        opened: true,
-        via: "shim",
-        port: cfg.port,
-        origin: originFor(cfg),
-        ...(opened.json && typeof opened.json === "object" ? opened.json : {}),
-      };
-    }
-  }
-  const direct = await openGrokWindow(cfg, null);
-  return { ...direct, via: "direct", fingerprint: wantedFp, statePath };
 }
 
 async function main() {
@@ -395,16 +321,8 @@ async function main() {
   const warnings = [];
   await mkdir(cfg.workDir, { recursive: true });
   const statePath = path.join(cfg.workDir, "grok-app.json");
-  const wantedFp = fingerprint(cfg);
-
-  if (cfg.openWindow && !cfg.supervised) {
-    const result = await handleOpen(cfg, statePath, wantedFp);
-    console.log(JSON.stringify({ ...result, warnings, appDataRoots: defaultAppDataRoots(cfg) }));
-    if (!result.ok) {
-      process.exitCode = 1;
-    }
-    return;
-  }
+  const token = await resolveOrCreateToken(cfg, statePath);
+  const wantedFp = fingerprint(cfg, token);
 
   if (cfg.forceRestart) {
     const existing = await readState(statePath);
@@ -413,73 +331,99 @@ async function main() {
     }
   }
 
-  if (cfg.supervised) {
-    const reused = await tryReusedResponse(cfg, statePath, wantedFp);
-    if (reused) {
-      if (cfg.openWindow) {
-        const opened = await handleOpen(cfg, statePath, wantedFp);
-        console.log(JSON.stringify({ ...reused, ...opened, warnings }));
-        return;
-      }
-      console.log(JSON.stringify({ ...reused, warnings }));
-      return;
-    }
-    const planned = await buildSupervisedPlan(cfg, warnings, wantedFp);
-    if (!planned.ok) {
-      console.log(
-        JSON.stringify({
-          ...planned,
-          repoRoot: cfg.repoRoot,
-          warnings,
-          appDataRoots: defaultAppDataRoots(cfg),
-        }),
-      );
-      process.exitCode = 1;
-      return;
-    }
-    console.log(
-      JSON.stringify({
-        ok: true,
-        reused: false,
-        plan: planned.plan,
-        origin: originFor(cfg),
-        port: cfg.port,
-        healthUrl: healthUrlFor(cfg),
-        launchTarget: planned.launchTarget?.path || null,
-        warnings,
-        repoRoot: cfg.repoRoot,
-        openAfterStart: cfg.openWindow === true,
-      }),
-    );
-    return;
-  }
-
-  // 非 supervised：仅探活 / 打开（不本地 spawn 长驻；长驻交给 daemon）
-  const reused = await tryReusedResponse(cfg, statePath, wantedFp);
-  if (reused) {
-    console.log(JSON.stringify({ ...reused, warnings }));
-    return;
-  }
-  const launchTarget = await resolveGrokLaunchTarget(cfg);
-  if (!launchTarget) {
+  const launchPath = await resolveLaunchBinary(cfg.repoRoot);
+  if (!launchPath) {
     console.log(
       JSON.stringify({
         ok: false,
-        error: "grok_app_not_installed",
+        error: "grok_host_not_found",
         message: INSTALL_HINT,
         installUrl: "https://github.com/RongleCat/grok-app/releases",
         warnings: [INSTALL_HINT],
+        repoRoot: cfg.repoRoot,
       }),
     );
     process.exitCode = 1;
     return;
   }
+
+  const spawnCmd = await resolveSpawnCommand(launchPath);
+  if (!spawnCmd) {
+    console.log(
+      JSON.stringify({
+        ok: false,
+        error: "grok_host_binary_unresolved",
+        message: `无法解析 ${launchPath} 内可执行文件。${INSTALL_HINT}`,
+        launchPath,
+      }),
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const distIndex = path.join(resolveDistDir(cfg.repoRoot), "index.html");
+  if (!(await pathExists(distIndex)) && !String(launchPath).includes("/Applications/")) {
+    warnings.push(
+      `未找到 ${distIndex}。仓内 release 启动前请 pnpm build；已安装的 Grok.app 可走 embedded frontendDist。`,
+    );
+  }
+
+  if (cfg.supervised) {
+    const reused = await tryReused(cfg, statePath, token, wantedFp);
+    if (reused) {
+      console.log(JSON.stringify({ ...reused, warnings, launchPath: spawnCmd }));
+      return;
+    }
+
+    const env = buildEnv(cfg, token, launchPath);
+    await writeState(statePath, {
+      fingerprint: wantedFp,
+      mirrorToken: token,
+      port: cfg.port,
+      launchPath: spawnCmd,
+      embedMode: "mirror-sidecar",
+      pending: true,
+    });
+
+    console.log(
+      JSON.stringify({
+        ok: true,
+        reused: false,
+        plan: {
+          command: spawnCmd,
+          args: [],
+          cwd: cfg.repoRoot,
+          env,
+          fingerprint: wantedFp,
+          healthUrl: healthUrl(cfg.port, token),
+          port: cfg.port,
+          launchMode: "packaged",
+        },
+        origin: guestOrigin(cfg.port, token),
+        port: cfg.port,
+        healthUrl: healthUrl(cfg.port, token),
+        mirrorToken: token,
+        embedMode: "mirror-sidecar",
+        launchPath: spawnCmd,
+        warnings,
+        repoRoot: cfg.repoRoot,
+      }),
+    );
+    return;
+  }
+
+  // 非 supervised：仅探活
+  const reused = await tryReused(cfg, statePath, token, wantedFp);
+  if (reused) {
+    console.log(JSON.stringify({ ...reused, warnings }));
+    return;
+  }
   console.log(
     JSON.stringify({
       ok: false,
-      error: "shim_not_running",
-      message: "host-shim 未运行。请打开 Grok App Tab（走 supervised ensure）或传 --supervised。",
-      launchTarget: launchTarget.path,
+      error: "mirror_not_running",
+      message: "Mirror 未运行。请打开 Grok App Tab（supervised ensure）拉起 Headless Host。",
+      origin: guestOrigin(cfg.port, token),
       warnings,
     }),
   );

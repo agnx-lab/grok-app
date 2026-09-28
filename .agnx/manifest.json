@@ -1,8 +1,8 @@
 {
   "id": "grok-app",
   "name": "Grok App",
-  "version": "0.1.0",
-  "description": "Agnx 外置子应用：Grok Build CLI 工作台（路径 A · 外置 Host + 状态/深链）",
+  "version": "0.2.0",
+  "description": "Agnx 外置子应用：Grok Build Workbench（路径 B · Headless Mirror + Guest）",
   "engines": {
     "agnx": ">=1.0.0"
   },
@@ -19,6 +19,11 @@
     "stateFile": "grok-app.json",
     "defaultPort": 18799,
     "lifecycle": "lazy"
+  },
+  "guest": {
+    "kind": "web",
+    "auth": "none",
+    "preferStrategy": "auto"
   },
   "contributes": {
     "commands": [

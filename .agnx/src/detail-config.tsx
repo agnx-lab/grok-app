@@ -1,10 +1,10 @@
-// 场景：详情「配置」— embedMode / port / CLI / HOME / sessionDataMode / RemoteIM·Pet / retain。
+// 场景：详情「配置」— mirror port/token / CLI / HOME / sessionDataMode（禁外开）。
 import { createElement, useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { Text, TextInput, View, type TextStyle, type ViewStyle } from "react-native";
 import { useUnistyles } from "react-native-unistyles";
 import type { WorkspaceAppHostApi } from "@getagnx/app-sdk";
 import {
-  DEFAULT_GROK_APP_SHIM_PORT,
+  DEFAULT_GROK_APP_MIRROR_PORT,
   GROK_APP_ID,
   type GrokAppSessionDataMode,
 } from "./constants";
@@ -121,6 +121,7 @@ function DetailChip({
 function RuntimeDetailField(): ReactElement {
   const styles = useDetailLayoutStyles();
   const [portText, setPortText] = useState(String(cachedConfig.port));
+  const [mirrorToken, setMirrorToken] = useState(cachedConfig.mirrorToken);
   const [grokCliPath, setGrokCliPath] = useState(cachedConfig.grokCliPath);
   const [grokAppHome, setGrokAppHome] = useState(cachedConfig.grokAppHome);
   const [sessionDataMode, setSessionDataMode] = useState<GrokAppSessionDataMode>(
@@ -130,6 +131,7 @@ function RuntimeDetailField(): ReactElement {
   const [enablePet, setEnablePet] = useState(cachedConfig.enablePet);
   const [keepRunning, setKeepRunning] = useState(cachedConfig.keepRunningInBackground);
   const [portFocused, setPortFocused] = useState(false);
+  const [tokenFocused, setTokenFocused] = useState(false);
   const [cliFocused, setCliFocused] = useState(false);
   const [homeFocused, setHomeFocused] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -150,6 +152,7 @@ function RuntimeDetailField(): ReactElement {
         }
         setCachedGrokAppConfig(loaded);
         setPortText(String(loaded.port));
+        setMirrorToken(loaded.mirrorToken);
         setGrokCliPath(loaded.grokCliPath);
         setGrokAppHome(loaded.grokAppHome);
         setSessionDataMode(loaded.sessionDataMode);
@@ -172,7 +175,7 @@ function RuntimeDetailField(): ReactElement {
     }
     const port = Number(portText);
     if (!Number.isFinite(port) || port <= 0 || port > 65535) {
-      setError(`端口无效（默认 ${DEFAULT_GROK_APP_SHIM_PORT}）`);
+      setError(`端口无效（默认 ${DEFAULT_GROK_APP_MIRROR_PORT}）`);
       return;
     }
     setBusy(true);
@@ -181,8 +184,8 @@ function RuntimeDetailField(): ReactElement {
     const before = cachedConfig;
     try {
       const saved = await saveGrokAppConfigToHost(host.config, {
-        embedMode: "external-host",
         port: Math.floor(port),
+        mirrorToken: mirrorToken.trim(),
         grokCliPath: grokCliPath.trim(),
         grokAppHome: grokAppHome.trim(),
         sessionDataMode,
@@ -193,6 +196,7 @@ function RuntimeDetailField(): ReactElement {
       setCachedGrokAppConfig(saved);
       const needRestart =
         saved.port !== before.port ||
+        saved.mirrorToken !== before.mirrorToken ||
         saved.grokCliPath !== before.grokCliPath ||
         saved.grokAppHome !== before.grokAppHome ||
         saved.sessionDataMode !== before.sessionDataMode;
@@ -206,12 +210,12 @@ function RuntimeDetailField(): ReactElement {
                 ? "cli-path"
                 : "session-mode",
         );
-        setSuccess("已保存；host-shim 正在按新配置热重启。");
+        setSuccess("已保存；Mirror Host 正在按新配置热重启。");
       } else if (saved.keepRunningInBackground !== before.keepRunningInBackground) {
         notifyGrokAppRuntimeNeedsRestart("retain");
         setSuccess("已保存后台保持运行偏好（下次关 Tab 生效）。");
       } else {
-        setSuccess("已保存。（Remote IM / 桌宠本期仅记录偏好，路径 A 不启上游模块）");
+        setSuccess("已保存。（Remote IM / 桌宠仅记录偏好，默认不启）");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -220,6 +224,7 @@ function RuntimeDetailField(): ReactElement {
     }
   }, [
     portText,
+    mirrorToken,
     grokCliPath,
     grokAppHome,
     sessionDataMode,
@@ -231,9 +236,9 @@ function RuntimeDetailField(): ReactElement {
   return (
     <View style={styles.column} testID="grok-app-runtime-field">
       <Text style={styles.muted}>
-        embedMode：external-host（路径 A · 本期写死）。路径 B（node-acp-sidecar）见活页 W3。
+        embedMode：mirror-sidecar（路径 B · Headless Mirror + Guest）。禁止外开系统窗。
       </Text>
-      <Text style={styles.muted}>host-shim 端口（默认 {DEFAULT_GROK_APP_SHIM_PORT}）</Text>
+      <Text style={styles.muted}>Mirror 端口（默认 {DEFAULT_GROK_APP_MIRROR_PORT}）</Text>
       <TextInput
         style={styles.input(portFocused)}
         value={portText}
@@ -243,6 +248,18 @@ function RuntimeDetailField(): ReactElement {
         keyboardType="number-pad"
         autoCapitalize="none"
         testID="grok-app-port-input"
+      />
+      <Text style={styles.muted}>Mirror token（可选；空 = ensure 自动生成）</Text>
+      <TextInput
+        style={styles.input(tokenFocused)}
+        value={mirrorToken}
+        onChangeText={setMirrorToken}
+        onFocus={() => setTokenFocused(true)}
+        onBlur={() => setTokenFocused(false)}
+        placeholder="留空自动生成"
+        placeholderTextColor={styles.muted.color}
+        autoCapitalize="none"
+        testID="grok-app-token-input"
       />
       <Text style={styles.muted}>grok CLI 路径（可选；空 = PATH）</Text>
       <TextInput
@@ -256,7 +273,7 @@ function RuntimeDetailField(): ReactElement {
         autoCapitalize="none"
         testID="grok-app-cli-input"
       />
-      <Text style={styles.muted}>GROK_APP_HOME（可选；空 = OS 默认 App Support）</Text>
+      <Text style={styles.muted}>GROK_APP_HOME（可选）</Text>
       <TextInput
         style={styles.input(homeFocused)}
         value={grokAppHome}
@@ -302,9 +319,6 @@ function RuntimeDetailField(): ReactElement {
           testID="grok-app-pet"
         />
       </View>
-      <Text style={styles.muted}>
-        Remote IM / 桌宠默认关；路径 A 仅保存偏好，不启上游模块。M6 另授权。
-      </Text>
       <View style={styles.row}>
         <DetailChip
           label="保存并应用"
@@ -327,7 +341,7 @@ function ReloadSection(): ReactElement {
   return (
     <View style={styles.row} testID="grok-app-reload">
       <DetailChip
-        label="强制重启 shim"
+        label="强制重启 Mirror"
         tone="accent"
         onPress={() => notifyGrokAppRuntimeNeedsRestart("manual")}
         testID="grok-app-force-restart-config"
@@ -352,16 +366,16 @@ export function registerGrokAppDetailConfig(host: WorkspaceAppHostApi): () => vo
       return [
         {
           label: "运行时",
-          value: `${cfg.embedMode} · :${cfg.port} · ${cfg.sessionDataMode}`,
-          helpText: "shim 端口 / CLI / GROK_APP_HOME / sessionDataMode / Remote IM·桌宠偏好。",
+          value: `mirror-sidecar · :${cfg.port} · ${cfg.sessionDataMode}`,
+          helpText: "Mirror 端口 / token / CLI / GROK_APP_HOME / sessionDataMode。",
           groupId: "grok-app-runtime",
           groupTitle: "Grok App",
           valueContent: createElement(RuntimeDetailField),
         },
         {
           label: "重新加载",
-          value: "Tab / shim",
-          helpText: "强制重拉 ensure + host-shim。",
+          value: "Tab / Mirror",
+          helpText: "强制重拉 ensure + Guest。",
           groupId: "grok-app-runtime",
           groupTitle: "Grok App",
           valueContent: createElement(ReloadSection),
