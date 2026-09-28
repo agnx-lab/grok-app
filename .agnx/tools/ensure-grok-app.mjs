@@ -8,6 +8,7 @@
  * stdout：单行 JSON { ok, origin, port, reused?, pid?, plan?, warnings?, error? }
  * origin 形如 http://127.0.0.1:{port}/t/{token}/ （禁止外开 Grok.app 当交付）
  */
+import { spawn } from "node:child_process";
 import { access, constants as fsConstants, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
 import http from "node:http";
@@ -222,8 +223,9 @@ async function resolveOrCreateToken(cfg, statePath) {
   return randomBytes(24).toString("hex");
 }
 
-function buildEnv(cfg, token, launchPath) {
+async function buildEnv(cfg, token, launchPath) {
   const distDir = resolveDistDir(cfg.repoRoot);
+  const distIndex = path.join(distDir, "index.html");
   const env = {
     GROK_MIRROR_HEADLESS: "1",
     GROK_MIRROR_NO_TUNNEL: "1",
@@ -233,11 +235,10 @@ function buildEnv(cfg, token, launchPath) {
     GROK_APP_SESSION_DATA_MODE: cfg.sessionDataMode,
     GROK_APP_EMBED_MODE: "mirror-sidecar",
   };
-  // Packaged .app 可走 embedded frontendDist；仓内 release 优先显式 dist
-  if (!String(launchPath).includes(".app")) {
-    env.GROK_MIRROR_DIST = distDir;
-  } else if (path.join(cfg.repoRoot, "dist", "index.html")) {
-    // 若本仓已 build dist，也注入，便于开发树覆盖
+  // Packaged .app：勿注入缺失 dist（会盖掉 embedded frontend，落到 CI 占位路径）
+  // 仓内 release / 本仓已 build：才显式 GROK_MIRROR_DIST
+  const packaged = String(launchPath).includes(".app") || String(launchPath).includes("/Contents/MacOS/");
+  if (!packaged || (await pathExists(distIndex))) {
     env.GROK_MIRROR_DIST = distDir;
   }
   if (cfg.grokAppHome) {
@@ -247,6 +248,78 @@ function buildEnv(cfg, token, launchPath) {
     env.AGNX_GROK_CLI_PATH = cfg.grokCliPath;
   }
   return env;
+}
+
+async function waitForMirrorHealth(port, token, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs;
+  const url = healthUrl(port, token);
+  while (Date.now() < deadline) {
+    const health = await httpGet(url, 2500);
+    if (health.ok && health.json?.ok === true) {
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return false;
+}
+
+/**
+ * Grok Host health 仅 `{ok:true}`，不回声 AGNX_SIDECAR_INSTANCE。
+ * daemon supervised spawn 会卡 instanceId → ensure 自拉起，并以 reused 交卷供 Guest 挂载。
+ */
+async function spawnMirrorLocal(cfg, statePath, token, wantedFp, launchPath, spawnCmd, warnings) {
+  const envPatch = await buildEnv(cfg, token, launchPath);
+  const existing = await readState(statePath);
+  if (existing?.pid) {
+    stopPid(existing.pid);
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  const child = spawn(spawnCmd, [], {
+    cwd: cfg.repoRoot,
+    env: { ...process.env, ...envPatch },
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  const pid = child.pid ?? null;
+  const ready = await waitForMirrorHealth(cfg.port, token, 120_000);
+  if (!ready) {
+    stopPid(pid);
+    return {
+      ok: false,
+      error: "mirror_start_timeout",
+      message: `Headless Mirror 启动超时（port=${cfg.port}）。${INSTALL_HINT}`,
+      pid,
+      warnings,
+    };
+  }
+  await writeState(statePath, {
+    fingerprint: wantedFp,
+    mirrorToken: token,
+    port: cfg.port,
+    launchPath: spawnCmd,
+    embedMode: "mirror-sidecar",
+    pid,
+    updatedAt: new Date().toISOString(),
+  });
+  return {
+    ok: true,
+    // 对 daemon supervised 路径：标 reused，避免再 spawn 并卡 instanceId 健康检查
+    reused: true,
+    port: cfg.port,
+    origin: guestOrigin(cfg.port, token),
+    healthUrl: healthUrl(cfg.port, token),
+    mirrorToken: token,
+    embedMode: "mirror-sidecar",
+    pid,
+    fingerprint: wantedFp,
+    launchPath: spawnCmd,
+    warnings: [
+      ...warnings,
+      "ensure 自拉起 Headless Host（Grok health 无 instanceId；非外开 UX）",
+    ],
+  };
 }
 
 function resolveCommand(launchPath) {
@@ -368,66 +441,34 @@ async function main() {
     );
   }
 
-  if (cfg.supervised) {
-    const reused = await tryReused(cfg, statePath, token, wantedFp);
-    if (reused) {
-      console.log(JSON.stringify({ ...reused, warnings, launchPath: spawnCmd }));
-      return;
-    }
-
-    const env = buildEnv(cfg, token, launchPath);
-    await writeState(statePath, {
-      fingerprint: wantedFp,
-      mirrorToken: token,
-      port: cfg.port,
-      launchPath: spawnCmd,
-      embedMode: "mirror-sidecar",
-      pending: true,
-    });
-
+  // 无论是否 supervised：先复用；否则 ensure 自拉起（Grok health 无 instanceId，
+  // daemon 代 spawn 会卡死；无根 manifest 时还会落到非 supervised 探活失败）。
+  const reused = await tryReused(cfg, statePath, token, wantedFp);
+  if (reused) {
     console.log(
       JSON.stringify({
-        ok: true,
-        reused: false,
-        plan: {
-          command: spawnCmd,
-          args: [],
-          cwd: cfg.repoRoot,
-          env,
-          fingerprint: wantedFp,
-          healthUrl: healthUrl(cfg.port, token),
-          port: cfg.port,
-          launchMode: "packaged",
-        },
-        origin: guestOrigin(cfg.port, token),
-        port: cfg.port,
-        healthUrl: healthUrl(cfg.port, token),
-        mirrorToken: token,
-        embedMode: "mirror-sidecar",
-        launchPath: spawnCmd,
+        ...reused,
         warnings,
+        launchPath: spawnCmd,
         repoRoot: cfg.repoRoot,
       }),
     );
     return;
   }
 
-  // 非 supervised：仅探活
-  const reused = await tryReused(cfg, statePath, token, wantedFp);
-  if (reused) {
-    console.log(JSON.stringify({ ...reused, warnings }));
-    return;
-  }
-  console.log(
-    JSON.stringify({
-      ok: false,
-      error: "mirror_not_running",
-      message: "Mirror 未运行。请打开 Grok App Tab（supervised ensure）拉起 Headless Host。",
-      origin: guestOrigin(cfg.port, token),
-      warnings,
-    }),
+  const started = await spawnMirrorLocal(
+    cfg,
+    statePath,
+    token,
+    wantedFp,
+    launchPath,
+    spawnCmd,
+    warnings,
   );
-  process.exitCode = 1;
+  console.log(JSON.stringify({ ...started, repoRoot: cfg.repoRoot }));
+  if (!started.ok) {
+    process.exitCode = 1;
+  }
 }
 
 main().catch((err) => {
