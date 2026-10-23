@@ -1,5 +1,5 @@
 // 场景：Grok App Sub App 入口 — Guest Mirror + ensure + 详情配置 + 极薄 tools（路径 B）。
-import type { WorkspaceAppHostApi, WorkspaceAppModule } from "@getagnx/app-sdk";
+import type { WorkspaceAppHostApi, WorkspaceAppModule } from "@agnx-lab/app-sdk";
 import { GrokAppIcon } from "./grok-app-icon";
 import {
   GROK_APP_ENSURE_TOOL_REL,

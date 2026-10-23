@@ -1,5 +1,5 @@
 // 场景：Grok App host.config — mirror-sidecar / CLI / HOME / sessionDataMode（禁 external-host）。
-import type { WorkspaceAppConfigApi } from "@getagnx/app-sdk";
+import type { WorkspaceAppConfigApi } from "@agnx-lab/app-sdk";
 import {
   DEFAULT_GROK_APP_MIRROR_PORT,
   GROK_APP_CONFIG_KEY,

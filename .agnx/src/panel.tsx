@@ -12,7 +12,7 @@ import { StyleSheet } from "react-native-unistyles";
 import type {
   WorkspaceAppBrandLogoLoaderPanelProps,
   WorkspaceAppHostApi,
-} from "@getagnx/app-sdk";
+} from "@agnx-lab/app-sdk";
 import {
   GROK_APP_CONFIG_KEY,
   GROK_APP_ENSURE_TOOL_REL,

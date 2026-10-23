@@ -2,7 +2,7 @@
 import { createElement, useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { Text, TextInput, View, type TextStyle, type ViewStyle } from "react-native";
 import { useUnistyles } from "react-native-unistyles";
-import type { WorkspaceAppHostApi } from "@getagnx/app-sdk";
+import type { WorkspaceAppHostApi } from "@agnx-lab/app-sdk";
 import {
   DEFAULT_GROK_APP_MIRROR_PORT,
   GROK_APP_ID,

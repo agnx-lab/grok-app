@@ -1,5 +1,5 @@
 // 场景：极薄 Agent 工具 — grok_app_health / grok_app_open（开 Tab，禁外开 .app）。
-import type { WorkspaceAppHostApi } from "@getagnx/app-sdk";
+import type { WorkspaceAppHostApi } from "@agnx-lab/app-sdk";
 import {
   GROK_APP_ENSURE_TOOL_REL,
   GROK_APP_ID,
